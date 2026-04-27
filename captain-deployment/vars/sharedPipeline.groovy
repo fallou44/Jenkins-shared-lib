@@ -40,9 +40,7 @@ def call(Map config) {
 
             stage('Install CapRover CLI') {
                 steps {
-                    echo "Installing CapRover CLI"
-                    sh 'npm install -g caprover'
-                    sh 'caprover --version'
+                    echo "CapRover déploy CLI installation deja faite dans l\'image docker utilisée"
                 }
             }
 
