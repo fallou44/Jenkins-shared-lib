@@ -38,7 +38,7 @@ def call(Map config) {
     pipeline {
         agent {
             docker {
-                image 'papesambandour/docker-node-alpine-16-git:1.1'
+                image 'fadildev/jenkins-node-caprover:1.0'
                 args '-u root:root'
             }
         }
