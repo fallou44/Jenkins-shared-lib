@@ -148,17 +148,19 @@ def call(Map config = [:]) {
                 steps {
                     script {
                         def tarFile    = "deploy-${appName}-${env.BUILD_NUMBER}.tar.gz"
-                        def captainUrl = envConfig.captainUrl
+                        // Normalise l'URL : supprime le slash final si présent
+                        def captainUrl = envConfig.captainUrl.replaceAll('/+$', '')
 
                         echo "🚀 Deploying '${appName}' → ${envConfig.label} (${captainUrl})"
 
                         withCredentials([string(credentialsId: envConfig.credentialId, variable: 'CAPTAIN_PASSWORD')]) {
 
                             // Étape 1 : Login CapRover → récupère le token
+                            // --insecure : accepte les certificats SSL auto-signés (fréquent sur CapRover)
                             def loginStatus = sh(
                                 script: """
                                     set +x
-                                    curl -sf -X POST \\
+                                    curl -sf --insecure -X POST \\
                                         "${captainUrl}/api/v2/login" \\
                                         -H "Content-Type: application/json" \\
                                         -d '{"password":"'"\\${CAPTAIN_PASSWORD}"'"}' \\
@@ -169,7 +171,9 @@ def call(Map config = [:]) {
                             )
 
                             if (loginStatus != 0) {
-                                error("❌ CapRover login failed. Vérifier CAPTAIN_URL et le credential.")
+                                echo "❌ CapRover login response:"
+                                sh "cat /tmp/caprover_login_${env.BUILD_NUMBER}.json || echo 'fichier vide'"
+                                error("❌ CapRover login failed (curl exit ${loginStatus}). Vérifier CAPTAIN_URL et le credential.")
                             }
 
                             def token = sh(
@@ -178,6 +182,7 @@ def call(Map config = [:]) {
                             ).trim()
 
                             if (!token) {
+                                echo "❌ Réponse login complète:"
                                 sh "cat /tmp/caprover_login_${env.BUILD_NUMBER}.json || true"
                                 error("❌ Token CapRover introuvable dans la réponse de login.")
                             }
@@ -188,7 +193,7 @@ def call(Map config = [:]) {
                             def deployStatus = sh(
                                 script: """
                                     set +x
-                                    curl -sf -X POST \\
+                                    curl -sf --insecure -X POST \\
                                         "${captainUrl}/api/v2/user/apps/appData/${appName}" \\
                                         -H "x-captain-auth: ${token}" \\
                                         -F "sourceFile=@/tmp/${tarFile}" \\
