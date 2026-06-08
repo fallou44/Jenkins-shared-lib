@@ -1,124 +1,172 @@
-// File: jenkins/sharedPipeline.groovy
-// Place this file in your Jenkins shared library
+/**
+ * sharedPipeline.groovy — CapRover Deployment Pipeline
+ * ─────────────────────────────────────────────────────────────────────────
+ * Centralized deployment pipeline for all company services targeting CapRover.
+ *
+ * Branch → Environment routing (automatic, no Jenkinsfile changes needed):
+ *   main    → PROD  (CAPTAIN_URL_PROD  / caprover-prod-password)
+ *   develop → DEV   (CAPTAIN_URL_DEV   / caprover-dev-password)
+ *   other   → pipeline skipped gracefully (no deployment)
+ *
+ * ─── Minimal Jenkinsfile usage (recommended) ────────────────────────────
+ *
+ *   @Library('jenkins-shared-lib@main') _
+ *   sharedPipeline(appName: 'my-api')
+ *
+ * ─── Full Jenkinsfile with optional overrides ────────────────────────────
+ *
+ *   @Library('jenkins-shared-lib@main') _
+ *   sharedPipeline(
+ *     appName          : 'my-api',
+ *     notifyEmails     : 'team@company.com;ops@company.com',
+ *     deploymentTimeout: '180'
+ *   )
+ *
+ * ─── Required Jenkins Global Environment Variables ───────────────────────
+ *   CAPTAIN_URL_PROD       URL of the production CapRover instance
+ *   CAPTAIN_URL_DEV        URL of the development CapRover instance
+ *   NOTIFY_EMAIL_DEFAULT   Semicolon-separated recipient emails
+ *   FROM_MAIL              Sender email address
+ *
+ * ─── Required Jenkins Credentials ────────────────────────────────────────
+ *   caprover-prod-password  Secret text — CapRover PROD password
+ *   caprover-dev-password   Secret text — CapRover DEV  password
+ * ─────────────────────────────────────────────────────────────────────────
+ */
+def call(Map config = [:]) {
 
-def call(Map config) {
-    // Default configuration with overridable parameters
-    def appName = config.appName ?: 'default-app'
-    def gitBranch = config.gitBranch ?: env.GIT_BRANCH
-    def notifyEmails = config.notifyEmails ?: env.NOTIFY_EMAIL_DEFAULT
-    def captainUrl = config.captainUrl ?: env.CAPTAIN_URL
-    def captainPassword = config.captainPassword ?: env.PASSWORD_CAPROVER
-    def deploymentTimeout = config.deploymentTimeout ?: '300'
-    def fromEmail = config.fromEmail ?: env.FROM_MAIL
-// Validate required parameters
-    if (!captainUrl || !captainPassword) {
-        error "Missing required deployment credentials: captainUrl or captainPassword"
+    // ── Required parameter ───────────────────────────────────────────────
+    if (!config.appName) {
+        error '❌ sharedPipeline requires "appName" to be set.\n' +
+              '   Example: sharedPipeline(appName: \'my-api\')'
     }
 
+    // ── Optional parameters with sensible defaults ───────────────────────
+    def appName           = config.appName
+    def notifyEmails      = config.notifyEmails      ?: env.NOTIFY_EMAIL_DEFAULT
+    def fromEmail         = config.fromEmail         ?: env.FROM_MAIL
+    def dockerImage       = config.dockerImage       ?: 'fadildev/jenkins-node-caprover:1.0'
+
+    // ── Resolve branch → target environment ─────────────────────────────
+    def envConfig = detectEnvironment(config)
+
+    // ─────────────────────────────────────────────────────────────────────
     pipeline {
         agent {
             docker {
-                image 'papesambandour/docker-node-alpine-16-git:1.1'
-                args '-u root:root'
+                image dockerImage
+                args  '-u root:root'
             }
         }
 
         options {
             timeout(time: 30, unit: 'MINUTES')
             disableConcurrentBuilds()
+            buildDiscarder(logRotator(numToKeepStr: '20'))
+            timestamps()
         }
 
-
+        // ── Stages ───────────────────────────────────────────────────────
         stages {
-            stage('Setup') {
-                steps {
-                    echo "Starting pipeline for ${appName} deployment"
-                    sh 'node --version && npm --version'
-                    sh 'git --version'
-                }
-            }
 
-            stage('Install CapRover CLI') {
+            // ── 1. Branch Gate ───────────────────────────────────────────
+            // Immediately stops the pipeline if the branch is not deployable.
+            // This avoids wasting agent resources on feature branches.
+            stage('Branch Gate') {
                 steps {
-                    echo "Installing CapRover CLI"
-                    sh 'npm install -g caprover'
-                    sh 'caprover --version'
-                }
-            }
-
-            stage('Prepare Deployment') {
-                steps {
-                    echo "Preparing deployment for branch: $GIT_BRANCH"
                     script {
-                        if (!captainUrl || !captainPassword) {
-                            error "Missing required deployment credentials"
+                        echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+                        echo "  📦 App         : ${appName}"
+                        echo "  🌿 Branch      : ${envConfig.branch}"
+                        echo "  🎯 Environment : ${envConfig.label}"
+                        echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+
+                        if (envConfig.environment == 'skip') {
+                            currentBuild.result = 'NOT_BUILT'
+                            error(
+                                "⚪ Branch '${envConfig.branch}' is not a deployable branch.\n" +
+                                "   Deployable branches:\n" +
+                                "     • main    → PROD\n" +
+                                "     • develop → DEV\n" +
+                                "   This build has been skipped — no deployment was performed."
+                            )
                         }
+
+                        if (!envConfig.captainUrl) {
+                            error(
+                                "❌ CapRover URL is not configured for environment '${envConfig.environment}'.\n" +
+                                "   Please set the following Jenkins global environment variable:\n" +
+                                "     ${envConfig.environment == 'prod' ? 'CAPTAIN_URL_PROD' : 'CAPTAIN_URL_DEV'}"
+                            )
+                        }
+
+                        echo "✅ Branch gate passed — deploying to ${envConfig.label}"
                     }
                 }
             }
 
+            // ── 2. Pre-flight Check ───────────────────────────────────────
+            // Verifies that the Docker image and required tools are available.
+            stage('Pre-flight Check') {
+                steps {
+                    sh 'caprover --version'
+                    sh 'git --version'
+                    echo '✅ Pre-flight checks passed'
+                }
+            }
+
+            // ── 3. Deploy to CapRover ─────────────────────────────────────
+            // Runs `caprover deploy` using the resolved URL and credential.
+            // The password is injected via withCredentials — never echoed.
             stage('Deploy to CapRover') {
                 steps {
-                    echo "Deploying ${appName} from branch- $GIT_BRANCH to ${captainUrl}"
-                    sh """
-                        set +x  # Disable command echo
-                        caprover deploy \
-                            -h ${captainUrl} \
-                            -p ${captainPassword} \
-                            -b $GIT_BRANCH \
-                            -a ${appName} 
-                        set -x  # Re-enable command echo
-                    """
+                    script {
+                        echo "🚀 Deploying '${appName}' → ${envConfig.label} (${envConfig.captainUrl})"
+                        withCredentials([string(credentialsId: envConfig.credentialId, variable: 'CAPTAIN_PASSWORD')]) {
+                            sh """
+                                set +x
+                                caprover deploy \\
+                                    --host     ${envConfig.captainUrl} \\
+                                    --password \${CAPTAIN_PASSWORD} \\
+                                    --branch   ${envConfig.branch} \\
+                                    --appName  ${appName}
+                                set -x
+                            """
+                        }
+                        echo "✅ '${appName}' successfully deployed to ${envConfig.label}!"
+                    }
                 }
             }
 
         }
 
+        // ── Post actions ─────────────────────────────────────────────────
         post {
             success {
                 script {
-                    def recipients = "${notifyEmails}".split(';').collect { "<${it.trim()}>" }.join(', ')
-                    emailext (
-                            subject: "✅ SUCCESSFUL: ${appName} Deployment to CapRover",
-                            body: """
-                            <h2>Deployment Successful</h2>
-                            <p>The ${appName} application was successfully deployed from branch <b>${GIT_BRANCH}</b>.</p>
-                            <p><b>Build URL:</b> <a href="${BUILD_URL}">${BUILD_URL}</a></p>
-                            <p><b>Build Number:</b> ${BUILD_NUMBER}</p>
-                            <p><b>Completed:</b> ${new Date()}</p>
-                        """,
-                            mimeType: 'text/html',
-                            replyTo: "${fromEmail}",
-                            to: recipients,
-                            attachLog: true,
-                            from: "${fromEmail}"
+                    sendNotification(
+                        status      : 'success',
+                        appName     : appName,
+                        environment : envConfig.label,
+                        notifyEmails: notifyEmails,
+                        fromEmail   : fromEmail
                     )
                 }
             }
-
             failure {
                 script {
-                    def recipients = "${notifyEmails}".split(';').collect { "<${it.trim()}>" }.join(', ')
-                    emailext (
-                            subject: "❌ FAILED: ${appName} Deployment to CapRover",
-                            body: """
-                            <h2>Deployment Failed</h2>
-                            <p>The ${appName} application deployment from branch <b>${GIT_BRANCH}</b> has failed.</p>
-                            <p><b>Build URL:</b> <a href="${BUILD_URL}">${BUILD_URL}</a></p>
-                            <p><b>Build Number:</b> ${BUILD_NUMBER}</p>
-                            <p><b>Failed At:</b> ${new Date()}</p>
-                            <p>Please check the attached log for details.</p>
-                        """,
-                            mimeType: 'text/html',
-                            replyTo: "${fromEmail}",
-                            to: recipients,
-                            attachLog: true,
-                            compressLog: true,
-                            from: "${fromEmail}"
-                    )
+                    // Guard: don't send failure email for intentional skips
+                    if (currentBuild.result != 'NOT_BUILT') {
+                        sendNotification(
+                            status      : 'failure',
+                            appName     : appName,
+                            environment : envConfig.label,
+                            notifyEmails: notifyEmails,
+                            fromEmail   : fromEmail
+                        )
+                    }
                 }
             }
-
             always {
                 cleanWs()
             }

@@ -1,0 +1,14 @@
+/**
+ * Jenkinsfile — Standard CapRover Deployment
+ * ────────────────────────────────────────────
+ * This is the ONLY file needed in each project.
+ * The shared library handles all deployment logic automatically.
+ *
+ * Branch routing (automatic — no changes needed):
+ *   push to main    → deploys to PROD
+ *   push to develop → deploys to DEV
+ *   other branches  → skipped (no deployment)
+ */
+@Library('jenkins-shared-lib@main') _
+
+sharedPipeline(appName: 'my-api')
