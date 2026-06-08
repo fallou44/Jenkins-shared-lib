@@ -160,70 +160,71 @@ def call(Map config = [:]) {
 
                         withCredentials([string(credentialsId: envConfig.credentialId, variable: 'CAPTAIN_PASSWORD')]) {
 
-                            // Étape 1 : Login CapRover → récupère le token
-                            // --insecure : accepte les certificats SSL auto-signés (fréquent sur CapRover)
-                            def loginStatus = sh(
-                                script: """
-                                    set +x
-                                    curl -sf --insecure -X POST \\
-                                        "${captainUrl}/api/v2/login" \\
-                                        -H "Content-Type: application/json" \\
-                                        -d '{"password":"'"\$CAPTAIN_PASSWORD"'"}' \\
-                                        -o /tmp/caprover_login_${env.BUILD_NUMBER}.json
-                                    set -x
-                                """,
-                                returnStatus: true
-                            )
-
-                            if (loginStatus != 0) {
-                                echo "❌ CapRover login response:"
-                                sh "cat /tmp/caprover_login_${env.BUILD_NUMBER}.json || echo 'fichier vide'"
-                                error("❌ CapRover login failed (curl exit ${loginStatus}). Vérifier CAPTAIN_URL et le credential.")
-                            }
-
-                            def token = sh(
-                                script: "grep -o '\"token\":\"[^\"]*\"' /tmp/caprover_login_${env.BUILD_NUMBER}.json | cut -d'\"' -f4",
-                                returnStdout: true
-                            ).trim()
-
-                            if (!token) {
-                                echo "❌ Réponse login complète:"
-                                sh "cat /tmp/caprover_login_${env.BUILD_NUMBER}.json || true"
-                                error("❌ Token CapRover introuvable dans la réponse de login.")
-                            }
-
-                            echo "✅ Authentifié sur CapRover (${envConfig.label})"
-
-                            // Étape 2 : Upload du tarball → CapRover build & deploy
                             def deployStatus = sh(
                                 script: """
                                     set +x
-                                    echo "📤 Uploading tarball and starting build on CapRover (detached)..."
-                                    http_code=\$(curl --insecure -s -X POST \\
-                                        "${captainUrl}/api/v2/user/apps/appData/${appName}?detached=1" \\
-                                        -H "x-captain-auth: ${token}" \\
-                                        -F "sourceFile=@/tmp/${tarFile}" \\
-                                        -o /tmp/caprover_deploy_${env.BUILD_NUMBER}.json \\
-                                        -w "%{http_code}")
+                                    if command -v caprover >/dev/null 2>&1; then
+                                        echo "✅ CapRover CLI found. Deploying via CLI..."
+                                        caprover deploy \\
+                                            -h "${captainUrl}" \\
+                                            -p "\${CAPTAIN_PASSWORD}" \\
+                                            -b "${envConfig.branch}" \\
+                                            -a "${appName}"
+                                    elif command -v npm >/dev/null 2>&1; then
+                                        echo "📦 npm found. Installing CapRover CLI locally..."
+                                        npm install -g caprover || npm install -g caprover --unsafe-perm
+                                        caprover deploy \\
+                                            -h "${captainUrl}" \\
+                                            -p "\${CAPTAIN_PASSWORD}" \\
+                                            -b "${envConfig.branch}" \\
+                                            -a "${appName}"
+                                    else
+                                        echo "⚠️ CapRover CLI and npm not found on this agent."
+                                        echo "📤 Falling back to non-blocking API upload (curl)..."
+                                        
+                                        # Login step to get token
+                                        http_login_code=\$(curl --insecure -s -X POST \\
+                                            "${captainUrl}/api/v2/login" \\
+                                            -H "Content-Type: application/json" \\
+                                            -d '{"password":"'"\$CAPTAIN_PASSWORD"'"}' \\
+                                            -o /tmp/caprover_login_${env.BUILD_NUMBER}.json \\
+                                            -w "%{http_code}")
+                                        
+                                        if [ "\$http_login_code" != "200" ]; then
+                                            echo "❌ CapRover login failed (HTTP status \$http_login_code)"
+                                            cat /tmp/caprover_login_${env.BUILD_NUMBER}.json || true
+                                            exit 1
+                                        fi
+                                        
+                                        token=\$(grep -o '"token":"[^"]*"' /tmp/caprover_login_${env.BUILD_NUMBER}.json | cut -d'"' -f4)
+                                        
+                                        # Upload step (detached mode to avoid 504 Gateway Timeouts)
+                                        http_deploy_code=\$(curl --insecure -s -X POST \\
+                                            "${captainUrl}/api/v2/user/apps/appData/${appName}?detached=1" \\
+                                            -H "x-captain-auth: \$token" \\
+                                            -F "sourceFile=@/tmp/${tarFile}" \\
+                                            -o /tmp/caprover_deploy_${env.BUILD_NUMBER}.json \\
+                                            -w "%{http_code}")
+                                        
+                                        echo "CapRover response HTTP code: \$http_deploy_code"
+                                        if [ -f /tmp/caprover_deploy_${env.BUILD_NUMBER}.json ]; then
+                                            echo "📝 CapRover API response:"
+                                            cat /tmp/caprover_deploy_${env.BUILD_NUMBER}.json
+                                            echo ""
+                                        fi
+                                        
+                                        if [ "\$http_deploy_code" != "200" ]; then
+                                            echo "❌ CapRover deployment failed with HTTP status \$http_deploy_code"
+                                            exit 1
+                                        fi
+                                    fi
                                     set -x
-                                    
-                                    echo "CapRover response HTTP code: \$http_code"
-                                    if [ -f /tmp/caprover_deploy_${env.BUILD_NUMBER}.json ]; then
-                                        echo "📝 CapRover API response:"
-                                        cat /tmp/caprover_deploy_${env.BUILD_NUMBER}.json
-                                        echo ""
-                                    fi
-                                    
-                                    if [ "\$http_code" != "200" ]; then
-                                        echo "❌ CapRover deployment failed with HTTP status \$http_code"
-                                        exit 1
-                                    fi
                                 """,
                                 returnStatus: true
                             )
 
                             if (deployStatus != 0) {
-                                error("❌ CapRover deployment API call failed.")
+                                error("❌ CapRover deployment failed.")
                             }
 
                             // Nettoyage des fichiers temporaires
@@ -233,7 +234,7 @@ def call(Map config = [:]) {
                                       /tmp/caprover_deploy_${env.BUILD_NUMBER}.json
                             """
 
-                            echo "✅ '${appName}' deployed successfully to ${envConfig.label}!"
+                            echo "✅ '${appName}' deployment process completed for ${envConfig.label}!"
                         }
                     }
                 }
