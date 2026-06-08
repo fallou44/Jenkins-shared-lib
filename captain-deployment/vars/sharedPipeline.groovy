@@ -132,7 +132,16 @@ def call(Map config = [:]) {
                             } else if (fileExists('vite.config.js') || fileExists('vite.config.ts')) {
                                 echo "🎯 Detected: Vite/React Application"
                             } else {
-                                echo "🎯 Detected: Generic Node.js Application"
+                                def hasExpress = sh(
+                                    script: "grep -q '\"express\"' package.json && echo 'yes' || echo 'no'",
+                                    returnStdout: true
+                                ).trim() == 'yes'
+                                
+                                if (hasExpress) {
+                                    echo "🎯 Detected: Node/Express Application"
+                                } else {
+                                    echo "🎯 Detected: Generic Node.js Application"
+                                }
                             }
                         } else {
                             echo "⚠️ No package.json found. Skipping Node-specific checks."
