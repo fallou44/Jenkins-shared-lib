@@ -61,6 +61,7 @@ Le pipeline examine la racine de l'espace de travail pour détecter le type d'ap
 *   `nest-cli.json` → NestJS
 *   `next.config.js` / `.mjs` / `.ts` → Next.js
 *   `vite.config.js` / `.ts` → Vite / React
+*   `package.json` contenant la dépendance `express` → Node / Express
 *   `package.json` seul → Node.js générique
 
 ### Gestion Robuste des Outils
