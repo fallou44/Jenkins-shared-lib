@@ -42,18 +42,28 @@ def call(Map config = [:]) {
     }
 
     // ── Optional parameters with sensible defaults ───────────────────────
+    // Image Docker custom avec caprover CLI pré-installé.
+    // Avantage vs collègue : pas besoin de 'npm install -g caprover' à chaque build
+    // → build plus rapide + version caprover contrôlée.
     def appName      = config.appName
     def notifyEmails = config.notifyEmails ?: env.NOTIFY_EMAIL_DEFAULT
     def fromEmail    = config.fromEmail    ?: env.FROM_MAIL
+    def dockerImage  = config.dockerImage  ?: 'fadildev/jenkins-node-caprover:1.0'
 
-    // ── Resolve branch → target environment ─────────────────────────────
+    // ── Resolve branch → target environment (automatique) ────────────────
+    // main    → PROD  |  develop → DEV  |  autre → skippé
     def envConfig = detectEnvironment(config)
 
     // ─────────────────────────────────────────────────────────────────────
     pipeline {
-        // 'agent any' = utilise le premier nœud Jenkins disponible.
-        // Compatible avec tout Jenkins sans plugin Docker.
-        agent any
+        // Agent Docker : image custom avec Node + caprover CLI pré-installés.
+        // Isolé, reproductible, indépendant de la machine Jenkins.
+        agent {
+            docker {
+                image dockerImage
+                args  '-u root:root'
+            }
+        }
 
         options {
             timeout(time: 30, unit: 'MINUTES')
@@ -66,8 +76,8 @@ def call(Map config = [:]) {
         stages {
 
             // ── 1. Branch Gate ───────────────────────────────────────────
-            // Immediately stops the pipeline if the branch is not deployable.
-            // This avoids wasting agent resources on feature branches.
+            // Stoppe immédiatement si la branche n'est pas déployable.
+            // Évite de consommer un executor pour rien sur les feature branches.
             stage('Branch Gate') {
                 steps {
                     script {
@@ -102,25 +112,16 @@ def call(Map config = [:]) {
             }
 
             // ── 2. Pre-flight Check ───────────────────────────────────────
-            // Installs caprover CLI if not already present, then verifies tools.
+            // Vérifie que les outils sont disponibles dans l'image Docker.
+            // caprover est pré-installé dans fadildev/jenkins-node-caprover.
+            // Pas de 'npm install' nécessaire → build plus rapide.
             stage('Pre-flight Check') {
                 steps {
-                    script {
-                        // Installe caprover CLI si non disponible sur le nœud
-                        def caproverInstalled = sh(
-                            script: 'command -v caprover >/dev/null 2>&1 && echo "yes" || echo "no"',
-                            returnStdout: true
-                        ).trim()
-
-                        if (caproverInstalled == 'no') {
-                            echo '📦 caprover CLI non trouvé — installation via npm...'
-                            sh 'npm install -g caprover'
-                        }
-
-                        sh 'caprover --version'
-                        sh 'git --version'
-                        echo '✅ Pre-flight checks passed'
-                    }
+                    sh 'node --version'
+                    sh 'npm --version'
+                    sh 'caprover --version'
+                    sh 'git --version'
+                    echo '✅ Pre-flight checks passed'
                 }
             }
 
