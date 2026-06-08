@@ -53,6 +53,34 @@ sharedPipeline(
 )
 ```
 
+### Fichier de configuration SonarQube (`sonar-project.properties`)
+
+Si vous activez l'analyse SonarQube (`sonarEnabled: true`), vous devez créer un fichier **`sonar-project.properties`** à la racine de votre application. 
+
+Voici un modèle standard prêt à l'emploi (à adapter avec le nom de votre projet) :
+
+```properties
+# Identifiant unique de votre projet dans SonarQube (sans espaces)
+sonar.projectKey=nom-de-votre-app
+sonar.projectName=Nom de votre application
+sonar.projectVersion=1.0.0
+
+# Emplacement du code source à analyser (généralement 'src' ou '.' si à la racine)
+sonar.sources=src
+
+# Encodage des fichiers sources
+sonar.sourceEncoding=UTF-8
+
+# Fichiers et répertoires à exclure de l'analyse (fichiers compilés, dépendances, configs)
+sonar.exclusions=node_modules/**, dist/**, build/**, .next/**, coverage/**, **/*.spec.ts, **/*.spec.js, **/*.test.ts, **/*.test.js, vite.config.ts, next.config.js
+
+# Optionnel : Si vous souhaitez inclure les tests et la couverture de code Jest/Vitest
+# sonar.tests=src
+# sonar.test.inclusions=**/*.spec.ts, **/*.spec.js, **/*.test.ts, **/*.test.js
+# sonar.javascript.lcov.reportPaths=coverage/lcov.info
+# sonar.typescript.lcov.reportPaths=coverage/lcov.info
+```
+
 ---
 
 ## 🔍 Détection de Frameworks & Tests automatiques
