@@ -120,7 +120,97 @@ def call(Map config = [:]) {
                 }
             }
 
-            // ── 3. SonarQube Analysis (Optional) ──────────────────────────
+            // ── 3. Detect Project ─────────────────────────────────────────
+            stage('Detect Project') {
+                steps {
+                    script {
+                        if (fileExists('package.json')) {
+                            if (fileExists('nest-cli.json')) {
+                                echo "🎯 Detected: NestJS Application"
+                            } else if (fileExists('next.config.js') || fileExists('next.config.mjs') || fileExists('next.config.ts')) {
+                                echo "🎯 Detected: Next.js Application"
+                            } else if (fileExists('vite.config.js') || fileExists('vite.config.ts')) {
+                                echo "🎯 Detected: Vite/React Application"
+                            } else {
+                                echo "🎯 Detected: Generic Node.js Application"
+                            }
+                        } else {
+                            echo "⚠️ No package.json found. Skipping Node-specific checks."
+                        }
+                    }
+                }
+            }
+
+            // ── 4. Install Dependencies ──────────────────────────────────
+            stage('Install Dependencies') {
+                when {
+                    expression { return fileExists('package.json') }
+                }
+                steps {
+                    script {
+                        def hasNpm = sh(script: "command -v npm >/dev/null 2>&1 && echo 'yes' || echo 'no'", returnStdout: true).trim() == 'yes'
+                        def hasYarn = sh(script: "command -v yarn >/dev/null 2>&1 && echo 'yes' || echo 'no'", returnStdout: true).trim() == 'yes'
+                        def hasPnpm = sh(script: "command -v pnpm >/dev/null 2>&1 && echo 'yes' || echo 'no'", returnStdout: true).trim() == 'yes'
+
+                        if (hasPnpm && fileExists('pnpm-lock.yaml')) {
+                            echo "📦 pnpm-lock.yaml found. Installing with pnpm..."
+                            sh 'pnpm install --frozen-lockfile'
+                        } else if (hasYarn && fileExists('yarn.lock')) {
+                            echo "📦 yarn.lock found. Installing with yarn..."
+                            sh 'yarn install --frozen-lockfile'
+                        } else if (hasNpm) {
+                            if (fileExists('package-lock.json')) {
+                                echo "📦 package-lock.json found. Installing with npm ci..."
+                                sh 'npm ci'
+                            } else {
+                                echo "📦 No lockfile found. Installing with npm install..."
+                                sh 'npm install'
+                            }
+                        } else {
+                            echo "⚠️ No suitable package manager (npm, yarn, pnpm) found on this agent. Skipping dependencies installation."
+                        }
+                    }
+                }
+            }
+
+            // ── 5. Run Tests ──────────────────────────────────────────────
+            stage('Run Tests') {
+                when {
+                    expression { return fileExists('package.json') }
+                }
+                steps {
+                    script {
+                        def hasNpm = sh(script: "command -v npm >/dev/null 2>&1 && echo 'yes' || echo 'no'", returnStdout: true).trim() == 'yes'
+                        def hasYarn = sh(script: "command -v yarn >/dev/null 2>&1 && echo 'yes' || echo 'no'", returnStdout: true).trim() == 'yes'
+                        def hasPnpm = sh(script: "command -v pnpm >/dev/null 2>&1 && echo 'yes' || echo 'no'", returnStdout: true).trim() == 'yes'
+
+                        def hasTestScript = sh(
+                            script: "grep -q '\"test\":' package.json && echo 'yes' || echo 'no'",
+                            returnStdout: true
+                        ).trim() == 'yes'
+
+                        if (!hasTestScript) {
+                            echo "ℹ️ No test script found in package.json. Skipping tests."
+                            return
+                        }
+
+                        if (hasPnpm && fileExists('pnpm-lock.yaml')) {
+                            echo "🧪 Running tests with pnpm..."
+                            sh 'pnpm test'
+                        } else if (hasYarn && fileExists('yarn.lock')) {
+                            echo "🧪 Running tests with yarn..."
+                            sh 'yarn test'
+                        } else if (hasNpm) {
+                            echo "🧪 Running tests with npm..."
+                            sh 'npm test'
+                        } else {
+                            echo "⚠️ No package manager found to run tests. Skipping."
+                        }
+                    }
+                }
+            }
+
+            // ── 6. SonarQube Analysis (Optional) ──────────────────────────
             stage('SonarQube Analysis') {
                 when {
                     expression { return sonarEnabled }
@@ -157,7 +247,7 @@ def call(Map config = [:]) {
                 }
             }
 
-            // ── 4. Package ───────────────────────────────────────────────
+            // ── 7. Package ───────────────────────────────────────────────
             // Crée une archive tar.gz du workspace (source code).
             // Exclut git, node_modules, etc. pour alléger le tarball.
             stage('Package') {
@@ -185,7 +275,7 @@ def call(Map config = [:]) {
                 }
             }
 
-            // ── 5. Deploy to CapRover ─────────────────────────────────────
+            // ── 8. Deploy to CapRover ─────────────────────────────────────
             // Déploiement via CapRover REST API (curl/CLI hybride):
             //   Étape 1 — Détection CLI / npm
             //   Étape 2 — Déploiement ou repli sur API curl (mode detached)
