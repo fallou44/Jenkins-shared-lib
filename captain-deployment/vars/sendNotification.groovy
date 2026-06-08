@@ -23,7 +23,7 @@ def call(Map params) {
         return
     }
 
-    def recipients  = notifyEmails.split(';').collect { "<${it.trim()}>" }.join(', ')
+    def recipients  = notifyEmails.split(';').collect { it.trim() }.join(',')
     def buildUrl    = env.BUILD_URL    ?: 'N/A'
     def buildNumber = env.BUILD_NUMBER ?: 'N/A'
     def gitBranch   = env.BRANCH_NAME ?: env.GIT_BRANCH ?: 'unknown'
