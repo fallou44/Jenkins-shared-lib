@@ -42,10 +42,12 @@ def call(Map config = [:]) {
     }
 
     // ── Optional parameters with sensible defaults ───────────────────────
-    def appName           = config.appName
-    def notifyEmails      = config.notifyEmails      ?: env.NOTIFY_EMAIL_DEFAULT
-    def fromEmail         = config.fromEmail         ?: env.FROM_MAIL
-    def dockerImage       = config.dockerImage       ?: 'fadildev/jenkins-node-caprover:1.0'
+    def appName      = config.appName
+    def notifyEmails = config.notifyEmails ?: env.NOTIFY_EMAIL_DEFAULT
+    def fromEmail    = config.fromEmail    ?: env.FROM_MAIL
+    // agentLabel : nom du nœud Jenkins qui a caprover CLI installé
+    // Laisser vide ou 'any' pour utiliser n'importe quel nœud disponible
+    def agentLabel   = config.agentLabel   ?: ''
 
     // ── Resolve branch → target environment ─────────────────────────────
     def envConfig = detectEnvironment(config)
@@ -53,10 +55,8 @@ def call(Map config = [:]) {
     // ─────────────────────────────────────────────────────────────────────
     pipeline {
         agent {
-            docker {
-                image dockerImage
-                args  '-u root:root'
-            }
+            // Utilise un nœud labelisé si fourni, sinon n'importe quel nœud
+            label agentLabel ?: 'any'
         }
 
         options {
@@ -106,12 +106,25 @@ def call(Map config = [:]) {
             }
 
             // ── 2. Pre-flight Check ───────────────────────────────────────
-            // Verifies that the Docker image and required tools are available.
+            // Installs caprover CLI if not already present, then verifies tools.
             stage('Pre-flight Check') {
                 steps {
-                    sh 'caprover --version'
-                    sh 'git --version'
-                    echo '✅ Pre-flight checks passed'
+                    script {
+                        // Installe caprover CLI si non disponible sur le nœud
+                        def caproverInstalled = sh(
+                            script: 'command -v caprover >/dev/null 2>&1 && echo "yes" || echo "no"',
+                            returnStdout: true
+                        ).trim()
+
+                        if (caproverInstalled == 'no') {
+                            echo '📦 caprover CLI non trouvé — installation via npm...'
+                            sh 'npm install -g caprover'
+                        }
+
+                        sh 'caprover --version'
+                        sh 'git --version'
+                        echo '✅ Pre-flight checks passed'
+                    }
                 }
             }
 
