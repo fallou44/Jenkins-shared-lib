@@ -3,6 +3,10 @@
  * ─────────────────────────────────────────────────────────────────────────
  * Centralized deployment pipeline for all company services targeting CapRover.
  *
+ * Deployment method: CapRover REST API via curl (no Docker plugin needed)
+ *   → Packages the workspace as a tarball and uploads to CapRover directly.
+ *   → Requires only: curl + tar (standard on any Linux Jenkins agent)
+ *
  * Branch → Environment routing (automatic, no Jenkinsfile changes needed):
  *   main    → PROD  (CAPTAIN_URL_PROD  / caprover-prod-password)
  *   develop → DEV   (CAPTAIN_URL_DEV   / caprover-dev-password)
@@ -17,9 +21,8 @@
  *
  *   @Library('jenkins-shared-lib@main') _
  *   sharedPipeline(
- *     appName          : 'my-api',
- *     notifyEmails     : 'team@company.com;ops@company.com',
- *     deploymentTimeout: '180'
+ *     appName      : 'my-api',
+ *     notifyEmails : 'team@company.com;ops@company.com'
  *   )
  *
  * ─── Required Jenkins Global Environment Variables ───────────────────────
@@ -42,13 +45,9 @@ def call(Map config = [:]) {
     }
 
     // ── Optional parameters with sensible defaults ───────────────────────
-    // Image Docker custom avec caprover CLI pré-installé.
-    // Avantage vs collègue : pas besoin de 'npm install -g caprover' à chaque build
-    // → build plus rapide + version caprover contrôlée.
     def appName      = config.appName
     def notifyEmails = config.notifyEmails ?: env.NOTIFY_EMAIL_DEFAULT
     def fromEmail    = config.fromEmail    ?: env.FROM_MAIL
-    def dockerImage  = config.dockerImage  ?: 'fadildev/jenkins-node-caprover:1.0'
 
     // ── Resolve branch → target environment (automatique) ────────────────
     // main    → PROD  |  develop → DEV  |  autre → skippé
@@ -56,14 +55,9 @@ def call(Map config = [:]) {
 
     // ─────────────────────────────────────────────────────────────────────
     pipeline {
-        // Agent Docker : image custom avec Node + caprover CLI pré-installés.
-        // Isolé, reproductible, indépendant de la machine Jenkins.
-        agent {
-            docker {
-                image dockerImage
-                args  '-u root:root'
-            }
-        }
+        // agent any = fonctionne sur tout Jenkins sans plugin Docker.
+        // Déploiement via curl + tar uniquement (disponibles partout sur Linux).
+        agent any
 
         options {
             timeout(time: 30, unit: 'MINUTES')
@@ -112,38 +106,112 @@ def call(Map config = [:]) {
             }
 
             // ── 2. Pre-flight Check ───────────────────────────────────────
-            // Vérifie que les outils sont disponibles dans l'image Docker.
-            // caprover est pré-installé dans fadildev/jenkins-node-caprover.
-            // Pas de 'npm install' nécessaire → build plus rapide.
+            // Vérifie que curl et tar sont disponibles (standard sur tout Linux).
+            // Aucun plugin Docker, npm ou Node.js requis.
             stage('Pre-flight Check') {
                 steps {
-                    sh 'node --version'
-                    sh 'npm --version'
-                    sh 'caprover --version'
+                    sh 'curl --version | head -1'
+                    sh 'tar --version | head -1'
                     sh 'git --version'
                     echo '✅ Pre-flight checks passed'
                 }
             }
 
-            // ── 3. Deploy to CapRover ─────────────────────────────────────
-            // Runs `caprover deploy` using the resolved URL and credential.
-            // The password is injected via withCredentials — never echoed.
+            // ── 3. Package ───────────────────────────────────────────────
+            // Crée une archive tar.gz du workspace (source code).
+            // Exclut git, node_modules, etc. pour alléger le tarball.
+            stage('Package') {
+                steps {
+                    script {
+                        def tarFile = "deploy-${appName}-${env.BUILD_NUMBER}.tar.gz"
+                        echo "📦 Packaging source code → ${tarFile}"
+                        sh """
+                            tar -czf /tmp/${tarFile} \
+                                --exclude='.git' \
+                                --exclude='node_modules' \
+                                --exclude='.env' \
+                                --exclude='*.log' \
+                                --exclude='dist' \
+                                --exclude='build' \
+                                .
+                        """
+                        echo "✅ Package created: /tmp/${tarFile}"
+                    }
+                }
+            }
+
+            // ── 4. Deploy to CapRover ─────────────────────────────────────
+            // Déploiement via CapRover REST API (curl uniquement):
+            //   Étape 1 — Login → récupère un token d'authentification
+            //   Étape 2 — Upload du tarball → CapRover build & déploie
             stage('Deploy to CapRover') {
                 steps {
                     script {
-                        echo "🚀 Deploying '${appName}' → ${envConfig.label} (${envConfig.captainUrl})"
+                        def tarFile    = "deploy-${appName}-${env.BUILD_NUMBER}.tar.gz"
+                        def captainUrl = envConfig.captainUrl
+
+                        echo "🚀 Deploying '${appName}' → ${envConfig.label} (${captainUrl})"
+
                         withCredentials([string(credentialsId: envConfig.credentialId, variable: 'CAPTAIN_PASSWORD')]) {
+
+                            // Étape 1 : Login CapRover → récupère le token
+                            def loginStatus = sh(
+                                script: """
+                                    set +x
+                                    curl -sf -X POST \\
+                                        "${captainUrl}/api/v2/login" \\
+                                        -H "Content-Type: application/json" \\
+                                        -d '{"password":"'"\\${CAPTAIN_PASSWORD}"'"}' \\
+                                        -o /tmp/caprover_login_${env.BUILD_NUMBER}.json
+                                    set -x
+                                """,
+                                returnStatus: true
+                            )
+
+                            if (loginStatus != 0) {
+                                error("❌ CapRover login failed. Vérifier CAPTAIN_URL et le credential.")
+                            }
+
+                            def token = sh(
+                                script: "grep -o '\"token\":\"[^\"]*\"' /tmp/caprover_login_${env.BUILD_NUMBER}.json | cut -d'\"' -f4",
+                                returnStdout: true
+                            ).trim()
+
+                            if (!token) {
+                                sh "cat /tmp/caprover_login_${env.BUILD_NUMBER}.json || true"
+                                error("❌ Token CapRover introuvable dans la réponse de login.")
+                            }
+
+                            echo "✅ Authentifié sur CapRover (${envConfig.label})"
+
+                            // Étape 2 : Upload du tarball → CapRover build & deploy
+                            def deployStatus = sh(
+                                script: """
+                                    set +x
+                                    curl -sf -X POST \\
+                                        "${captainUrl}/api/v2/user/apps/appData/${appName}" \\
+                                        -H "x-captain-auth: ${token}" \\
+                                        -F "sourceFile=@/tmp/${tarFile}" \\
+                                        -o /tmp/caprover_deploy_${env.BUILD_NUMBER}.json
+                                    set -x
+                                """,
+                                returnStatus: true
+                            )
+
+                            if (deployStatus != 0) {
+                                sh "cat /tmp/caprover_deploy_${env.BUILD_NUMBER}.json || true"
+                                error("❌ CapRover deployment API call failed.")
+                            }
+
+                            // Nettoyage des fichiers temporaires
                             sh """
-                                set +x
-                                caprover deploy \\
-                                    --host     ${envConfig.captainUrl} \\
-                                    --password \${CAPTAIN_PASSWORD} \\
-                                    --branch   ${envConfig.branch} \\
-                                    --appName  ${appName}
-                                set -x
+                                rm -f /tmp/${tarFile} \
+                                      /tmp/caprover_login_${env.BUILD_NUMBER}.json \
+                                      /tmp/caprover_deploy_${env.BUILD_NUMBER}.json
                             """
+
+                            echo "✅ '${appName}' deployed successfully to ${envConfig.label}!"
                         }
-                        echo "✅ '${appName}' successfully deployed to ${envConfig.label}!"
                     }
                 }
             }
@@ -165,7 +233,7 @@ def call(Map config = [:]) {
             }
             failure {
                 script {
-                    // Guard: don't send failure email for intentional skips
+                    // Guard: ne pas envoyer d'email pour les skips intentionnels
                     if (currentBuild.result != 'NOT_BUILT') {
                         sendNotification(
                             status      : 'failure',
