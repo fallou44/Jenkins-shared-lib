@@ -45,9 +45,12 @@ def call(Map config = [:]) {
     }
 
     // ── Optional parameters with sensible defaults ───────────────────────
-    def appName      = config.appName
-    def notifyEmails = config.notifyEmails ?: env.NOTIFY_EMAIL_DEFAULT
-    def fromEmail    = config.fromEmail    ?: env.FROM_MAIL
+    def appName                 = config.appName
+    def notifyEmails            = config.notifyEmails ?: env.NOTIFY_EMAIL_DEFAULT
+    def fromEmail               = config.fromEmail    ?: env.FROM_MAIL
+    def sonarEnabled            = config.sonarEnabled ?: false
+    def sonarServer             = config.sonarServer  ?: 'SonarQube'
+    def sonarWaitForQualityGate = config.sonarWaitForQualityGate ?: false
 
     // ── Resolve branch → target environment (automatique) ────────────────
     // main    → PROD  |  develop → DEV  |  autre → skippé
@@ -117,7 +120,44 @@ def call(Map config = [:]) {
                 }
             }
 
-            // ── 3. Package ───────────────────────────────────────────────
+            // ── 3. SonarQube Analysis (Optional) ──────────────────────────
+            stage('SonarQube Analysis') {
+                when {
+                    expression { return sonarEnabled }
+                }
+                steps {
+                    script {
+                        echo "🔍 Starting SonarQube analysis for ${appName}..."
+                        withSonarQubeEnv(sonarServer) {
+                            def hasScanner = sh(
+                                script: "command -v sonar-scanner >/dev/null 2>&1 && echo 'yes' || echo 'no'",
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (hasScanner == 'yes') {
+                                sh "sonar-scanner"
+                            } else {
+                                echo "⚠️ 'sonar-scanner' executable not found on this Jenkins agent."
+                                echo "   Please install 'sonar-scanner' on the host or configure it as a global tool."
+                                error "'sonar-scanner' is required for SonarQube analysis."
+                            }
+                        }
+                        
+                        if (sonarWaitForQualityGate) {
+                            echo "⏳ Waiting for SonarQube Quality Gate result..."
+                            timeout(time: 10, unit: 'MINUTES') {
+                                def qg = waitForQualityGate()
+                                if (qg.status != 'OK') {
+                                    error "❌ SonarQube Quality Gate failed: ${qg.status}"
+                                }
+                                echo "✅ SonarQube Quality Gate passed: ${qg.status}"
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 4. Package ───────────────────────────────────────────────
             // Crée une archive tar.gz du workspace (source code).
             // Exclut git, node_modules, etc. pour alléger le tarball.
             stage('Package') {
@@ -145,10 +185,10 @@ def call(Map config = [:]) {
                 }
             }
 
-            // ── 4. Deploy to CapRover ─────────────────────────────────────
-            // Déploiement via CapRover REST API (curl uniquement):
-            //   Étape 1 — Login → récupère un token d'authentification
-            //   Étape 2 — Upload du tarball → CapRover build & déploie
+            // ── 5. Deploy to CapRover ─────────────────────────────────────
+            // Déploiement via CapRover REST API (curl/CLI hybride):
+            //   Étape 1 — Détection CLI / npm
+            //   Étape 2 — Déploiement ou repli sur API curl (mode detached)
             stage('Deploy to CapRover') {
                 steps {
                     script {
