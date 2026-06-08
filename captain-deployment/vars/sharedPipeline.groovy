@@ -133,6 +133,11 @@ def call(Map config = [:]) {
                                 --exclude='*.log' \
                                 --exclude='dist' \
                                 --exclude='build' \
+                                --exclude='uploads' \
+                                --exclude='coverage' \
+                                --exclude='*.sql' \
+                                --exclude='*.zip' \
+                                --exclude='*.tar.gz' \
                                 .
                         """
                         echo "✅ Package created: /tmp/${tarFile}"
@@ -193,18 +198,30 @@ def call(Map config = [:]) {
                             def deployStatus = sh(
                                 script: """
                                     set +x
-                                    curl -sf --insecure -X POST \\
+                                    echo "📤 Uploading tarball and building on CapRover..."
+                                    http_code=\$(curl --insecure -s -X POST \\
                                         "${captainUrl}/api/v2/user/apps/appData/${appName}" \\
                                         -H "x-captain-auth: ${token}" \\
                                         -F "sourceFile=@/tmp/${tarFile}" \\
-                                        -o /tmp/caprover_deploy_${env.BUILD_NUMBER}.json
+                                        -o /tmp/caprover_deploy_${env.BUILD_NUMBER}.json \\
+                                        -w "%{http_code}")
                                     set -x
+                                    
+                                    echo "CapRover response HTTP code: \$http_code"
+                                    if [ "\$http_code" != "200" ]; then
+                                        echo "❌ CapRover deployment failed with HTTP status \$http_code"
+                                        if [ -f /tmp/caprover_deploy_${env.BUILD_NUMBER}.json ]; then
+                                            cat /tmp/caprover_deploy_${env.BUILD_NUMBER}.json
+                                        else
+                                            echo "No response body received."
+                                        fi
+                                        exit 1
+                                    fi
                                 """,
                                 returnStatus: true
                             )
 
                             if (deployStatus != 0) {
-                                sh "cat /tmp/caprover_deploy_${env.BUILD_NUMBER}.json || true"
                                 error("❌ CapRover deployment API call failed.")
                             }
 
