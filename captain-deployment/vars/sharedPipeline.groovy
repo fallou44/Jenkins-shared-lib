@@ -163,7 +163,7 @@ def call(Map config = [:]) {
                                     curl -sf --insecure -X POST \\
                                         "${captainUrl}/api/v2/login" \\
                                         -H "Content-Type: application/json" \\
-                                        -d '{"password":"'"\\${CAPTAIN_PASSWORD}"'"}' \\
+                                        -d '{"password":"'"\$CAPTAIN_PASSWORD"'"}' \\
                                         -o /tmp/caprover_login_${env.BUILD_NUMBER}.json
                                     set -x
                                 """,
