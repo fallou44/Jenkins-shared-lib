@@ -198,9 +198,9 @@ def call(Map config = [:]) {
                             def deployStatus = sh(
                                 script: """
                                     set +x
-                                    echo "📤 Uploading tarball and building on CapRover..."
+                                    echo "📤 Uploading tarball and starting build on CapRover (detached)..."
                                     http_code=\$(curl --insecure -s -X POST \\
-                                        "${captainUrl}/api/v2/user/apps/appData/${appName}" \\
+                                        "${captainUrl}/api/v2/user/apps/appData/${appName}?detached=1" \\
                                         -H "x-captain-auth: ${token}" \\
                                         -F "sourceFile=@/tmp/${tarFile}" \\
                                         -o /tmp/caprover_deploy_${env.BUILD_NUMBER}.json \\
@@ -208,13 +208,14 @@ def call(Map config = [:]) {
                                     set -x
                                     
                                     echo "CapRover response HTTP code: \$http_code"
+                                    if [ -f /tmp/caprover_deploy_${env.BUILD_NUMBER}.json ]; then
+                                        echo "📝 CapRover API response:"
+                                        cat /tmp/caprover_deploy_${env.BUILD_NUMBER}.json
+                                        echo ""
+                                    fi
+                                    
                                     if [ "\$http_code" != "200" ]; then
                                         echo "❌ CapRover deployment failed with HTTP status \$http_code"
-                                        if [ -f /tmp/caprover_deploy_${env.BUILD_NUMBER}.json ]; then
-                                            cat /tmp/caprover_deploy_${env.BUILD_NUMBER}.json
-                                        else
-                                            echo "No response body received."
-                                        fi
                                         exit 1
                                     fi
                                 """,
