@@ -45,19 +45,15 @@ def call(Map config = [:]) {
     def appName      = config.appName
     def notifyEmails = config.notifyEmails ?: env.NOTIFY_EMAIL_DEFAULT
     def fromEmail    = config.fromEmail    ?: env.FROM_MAIL
-    // agentLabel : nom du nœud Jenkins qui a caprover CLI installé
-    // Laisser vide ou 'any' pour utiliser n'importe quel nœud disponible
-    def agentLabel   = config.agentLabel   ?: ''
 
     // ── Resolve branch → target environment ─────────────────────────────
     def envConfig = detectEnvironment(config)
 
     // ─────────────────────────────────────────────────────────────────────
     pipeline {
-        agent {
-            // Utilise un nœud labelisé si fourni, sinon n'importe quel nœud
-            label agentLabel ?: 'any'
-        }
+        // 'agent any' = utilise le premier nœud Jenkins disponible.
+        // Compatible avec tout Jenkins sans plugin Docker.
+        agent any
 
         options {
             timeout(time: 30, unit: 'MINUTES')
